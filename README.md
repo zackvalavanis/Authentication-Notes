@@ -1,6 +1,6 @@
-# 📚 [Subject/Project Name] Notes & Cheat Sheet
+# 📚 Auth & Session Management Notes & Cheat Sheet
 
-A comprehensive reference guide for **[Subject/Project Name]**. Use this sheet to quickly lookup core concepts, commands, and syntax.
+A comprehensive reference guide for tracking authentication states and token storage. Use this sheet to quickly look up core concepts, commands, and syntax.
 
 ---
 
@@ -15,18 +15,8 @@ A comprehensive reference guide for **[Subject/Project Name]**. Use this sheet t
 
 ## 🚀 Getting Started
 
-### Prerequisites / Installation
-Briefly list any software, packages, or configurations required.
-
-```bash
-# Example installation command
-npm install package-name
-# or
-pip install package-name
-```
-
 ### Basic Configuration
-Where do settings go? (e.g., `.env`, `config.json`, or environment variables).
+To handle secure identity verification, we need a robust client-side storage mechanism that balances security vulnerabilities (like XSS and CSRF) against performance and seamless user experience.
 
 ---
 
@@ -35,50 +25,70 @@ Where do settings go? (e.g., `.env`, `config.json`, or environment variables).
 > [!NOTE]
 > Keep your code snippets minimal and focused on a single actionable concept.
 
-### 1. [Feature / Concept A]
+### 1. Initializing Auth State
 Explanation of what this does and when to use it.
 
-```python
-# Code snippet example (change 'python' to your language)
-def greet_user(name):
-    print(f"Hello, {name}!")
-
-greet_user("Developer")
+```javascript
+// Example initialization script to load saved tokens
+function initializeSession() {
+    const savedToken = localStorage.getItem('jwt_token');
+    if (savedToken) {
+        // Hydrate your fast synchronous in-memory application state
+        setAppState({ token: savedToken, isAuthenticated: true });
+        console.log("Session successfully restored from LocalStorage");
+    }
+}
 ```
 
-### 2. [Feature / Concept B]
-Explanation of the next major feature or command sequence.
+### 2. Core Storage Properties Lookup
+Quick reference overview of the web storage options available in modern browsers:
 
-| Command / API | Description | Example Output |
-| :--- | :--- | :--- |
-| `status` | Checks current state | `All systems operational` |
-| `sync` | Synchronizes local data | `Data updated successfully` |
-| `reset` | Reverts to last safe state | `Reverted to revision #1` |
+| API / Mechanism | Lifespan | Scope | Access Speed |
+| :--- | :--- | :--- | :--- |
+| `In-Memory State` | Wiped instantly on page reload / tab close | Isolated to the runtime instance | Extremely fast (Synchronous) |
+| `LocalStorage` | Persistent indefinitely until explicitly cleared | Shared across tabs/windows on the same origin | Fast (Synchronous Disk I/O) |
+| `SessionStorage` | Survives reloads, cleared when tab closes | Tab-specific isolation | Fast (Synchronous Disk I/O) |
 
 ---
 
 ## 💡 Best Practices & Tips
 
-> [!TIP]
-> Use this section for optimization flags, keyboard shortcuts, or structural design patterns that save time.
+### 🛡️ JWT Storage Strategy: State + LocalStorage
 
-* **Keep it modular:** Break down large functions into smaller components.
-* **Comment the 'Why':** Don't comment what the code does; comment *why* you chose that approach.
-* **Shortcut:** Use `Ctrl + Shift + P` (or `Cmd + Shift + P` on Mac) to quickly open the command palette.
+> [!NOTE]
+> The standard production answer for storing JWTs is a combination of **in-memory state** and **local storage**.
+
+#### The Core Problem: In-Memory State
+In-memory state **does not survive a refresh**. When a user reloads the page, the JavaScript runtime completely wipes and restarts.
+* **The Consequence:** If your token *only* lives in memory, the user is logged out instantly on refresh.
+
+#### The Solution: LocalStorage / SessionStorage
+Unlike memory, `LocalStorage` and `SessionStorage` **survive a page refresh**. 
+
+#### 🚀 The Hybrid Approach
+Because of this behavior, the common industry practice is to:
+1. **Keep the token in state** for fast, synchronous client-side API requests.
+2. **Copy the token to local storage** so that on page reload, an initialization script can read it back into state and seamlessly maintain the user session.
+
+### Additional Development Workflow Tips
+* **Keep it modular:** Break down large authentication functions into smaller single-purpose middleware or helper components.
+* **Comment the 'Why':** Don't comment *what* the storage code does; comment *why* you chose a specific option (e.g., listing why a certain token isn't being stored inside a cookie).
+* **Shortcut:** Use `Ctrl + Shift + P` (or `Cmd + Shift + P` on Mac) inside GitHub's browser editor to quickly open the command palette.
 
 ---
 
 ## 🔍 Troubleshooting & Common Errors
 
-### ❌ Error: `Example Error Message Text`
-* **Cause:** This usually happens when the dependency is missing or environment variables aren't loaded.
-* **Solution:** Run the sync command and verify your paths:
+### ❌ Error: `TypeError: Cannot read properties of null (reading 'token')`
+* **Cause:** This usually happens when the application state tries to fetch the JWT before the initialization script finishes parsing the token from local storage.
+* **Solution:** Wrap the downstream API requests in a validation check or add an explicit loading state conditional check:
   ```bash
-  project-cli sync --force
+  # Clear local storage keys to reset corrupt or expired tokens manually during debugging
+  window.localStorage.removeItem('jwt_token');
   ```
 
 ---
 
 ## 🔗 Useful Resources
-* [Official Documentation](https://example.com) - The source of truth.
+* [Official MDN Web Storage API Documentation](https://mozilla.org) - The source of truth for LocalStorage workflows.
 * [GitHub Markdown Guide](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax) - Official GitHub text formatting syntax.
