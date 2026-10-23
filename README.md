@@ -61,6 +61,8 @@ Quick reference overview of the web storage options available in modern browsers
 | Function type (sync, no args) | `logout: () => void` | |
 | Children prop | `{ children }: { children: ReactNode }` | `children` is a special name React fills in automatically |
 | Context with no default | `createContext<AuthContextType \| null>(null)` | `null` only shows up if used outside the provider |
+| Form submit event | `async (e: FormEvent) => { e.preventDefault() }` | `import type { FormEvent } from "react"` |
+| Caught errors | `catch (err) { if (err instanceof Error) err.message }` | Caught values are `unknown`, since JS can throw anything |
 
 ---
 
@@ -126,7 +128,7 @@ export function useAuth() {
 ### Step 6: Wrap the app
 * In `main.tsx`, wrap `<App />` with `<AuthProvider>`.
 * If using React Router, put the provider **inside** the router so auth actions can navigate.
-* ✅ Test: `console.log(useAuth())` should show `{ user: null, loading: false, login: ƒ }`.
+* ✅ Test: `console.log(useAuth())` should show an object with `user`, `loading`, `login`, and `logout`. (Once Step 13 is in, `loading` starts as `true` and flips to `false` after the session check.)
 
 ### Step 7: Call the login endpoint
 * Test with a bare login page and a button with hardcoded credentials before building the real form (one new thing at a time).
@@ -151,12 +153,27 @@ setToken(accessToken)
 * A JWT is header.payload.signature. The payload (`sub` = user id, `exp` = expiry) is only **encoded, not encrypted**. Anyone can read it on jwt.io, so never put secrets in it.
 * TODO: make the storage key a constant, since it's used in login, logout, and refresh.
 
-### Step 9: Fetch the user with the token
+### Step 9: Fetch the user with the token (`get_me` helper)
+Both `login` and the refresh check need this, so it lives in one helper:
 ```ts
-const meRes = await fetch(`${api}/auth/me`, {
-  headers: { Authorization: `Bearer ${accessToken}` },
-})
+const get_me = async (accessToken: string) => {
+  try {
+    const res = await fetch(`${api}/auth/me`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!res.ok) {
+      logout()
+      throw new Error("Couldn't load your account. Please try again.")
+    }
+    setUser(await res.json())
+  } catch (error) {
+    logout()
+    throw new Error("Couldn't load your account. Please try again.")
+  }
+}
 ```
+* Called with `await get_me(accessToken)` in `login`. Without `await`, `login` returns before the user is set and errors never reach the form.
+* ⚠️ A function that calls itself as its first line (`get_me(accessToken)` inside `get_me`) = infinite recursion / "maximum call stack."
 * Use the **local** `accessToken`, not `token` state. `setToken` doesn't update `token` until the next render.
 * Why keep `user` at all: the UI can show who's logged in, and on refresh `/me` doubles as a **token validity check** (works = valid, 401 = expired).
 * If `/me` fails: call `logout()` so there's never a token with no user ("half-logged-in").
@@ -181,21 +198,113 @@ const logout = () => {
 } catch (error) {
   console.error("Login error", error)
   throw error
-} finally {
-  setLoading(false)
 }
 ```
-* `finally` still runs when re-throwing.
+* `login` does **not** touch `loading` (see Step 13).
+
+### Step 11: The login page (controlled inputs + form)
+A **controlled input** has two halves: `value` reads from state, `onChange` writes to it.
+```tsx
+<input
+  id="password"
+  name="password"
+  type="password"
+  required
+  value={password}
+  onChange={(e) => setPassword(e.target.value)}
+/>
+```
+* The typed text is at `e.target.value`, **not** `e.value`.
+* An input with no `value`/`onChange` never updates state, so the backend gets empty fields → 422.
+* `type="email"` gives free format checking and the right phone keyboard. `type="password"` hides the text. (`type="username"` isn't a real type.)
+* Connect labels with `<label htmlFor="id">` for accessibility. Placeholders aren't labels.
+
+Submit handler:
+```tsx
+const handleSubmit = async (e: FormEvent) => {
+  e.preventDefault()
+  setError(null)
+
+  try {
+    await login({ email: username, password })
+    navigate("/")
+  } catch (err) {
+    if (err instanceof Error) {
+      setError(err.message)
+    } else {
+      setError("Something went wrong")
+    }
+  }
+}
+```
+* `e.preventDefault()` stops the browser's default full-page reload on submit.
+* `onSubmit={handleSubmit}`, passed directly, because it *wants* the event. (`onSubmit={() => handleSubmit(e)}` breaks: `e` doesn't exist there.)
+* Ask each time: "what does this function expect, and is that what React gives it?" `login` wants credentials → needs a wrapper. `handleSubmit` wants the event → pass it directly.
+* `handleSubmit` receives the **event**; the credentials come from **state**.
+* `navigate` goes **inside** the `try`, after `await login`. If it's after the `try/catch`, it runs even on failure and the user never sees the error.
+* `else` matters: without it, the fallback `setError` overwrites the real message every time.
+* Name the caught value something other than your state (`err` vs `error`).
+* Clear the old error at the start so it doesn't stick after a successful retry.
+
+### Step 12: Show the error
+```tsx
+{error && <p>{error}</p>}
+```
+* If `error` is `null`, React renders nothing.
+
+### Step 13: Stay logged in after refresh
+On reload, React state resets but the token is still in `localStorage`. Read it back on mount and verify it:
+```tsx
+const [loading, setLoading] = useState(true)
+
+useEffect(() => {
+  const restoreSession = async () => {
+    const saved_token = localStorage.getItem("Access_token")
+
+    if (!saved_token) {
+      setLoading(false)
+      return
+    }
+
+    try {
+      await get_me(saved_token)
+      setToken(saved_token)
+    } catch {
+      // get_me already called logout(); token was expired or invalid
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  restoreSession()
+}, [])
+```
+* `useEffect(..., [])` runs **once** on mount. Without `[]` it runs after every render, and with state updates inside, that becomes a loop.
+* An effect's function can't be `async` directly, so define an `async` function inside and call it.
+* Defining `restoreSession` isn't enough; you have to **call** it.
+* What's stored is the **token**, not the user. The user comes from `/me`.
+* `/me` doubles as the validity check: expired token → `get_me` throws → logged out.
+* The empty `catch` prevents "Uncaught (in promise)" errors on every refresh with an expired token.
+
+**What `loading` means now:** only "haven't checked the saved session yet."
+* Starts as `true`, because on page load nobody knows yet.
+* `login` does **not** toggle it. The form tracks its own "submitting" state.
+* Why it matters: protected routes will wait for `loading === false` before deciding to redirect. Otherwise a logged-in user gets kicked to the login page for a split second on every refresh.
+
+✅ Tests:
+* Log in → refresh → still logged in.
+* Log out → refresh → still logged out.
 
 ### Next up
-- [ ] Real login page: controlled inputs, `<form onSubmit>`, `preventDefault`, password `type`
-- [ ] Form `try/catch` around `await login(...)`, error state, `error instanceof Error`
-- [ ] Submitting state to disable the button
-- [ ] Refresh: on mount, read the token from localStorage and validate it with `/me` (`loading` starts as `true` for this)
+- [x] Real login page: controlled inputs, `<form onSubmit>`, `preventDefault`, password `type`
+- [x] Form `try/catch` around `await login(...)`, error state, `err instanceof Error`
+- [x] Refresh: on mount, read the token from localStorage and validate it with `/me`
+- [ ] Submitting state to disable the button ("Signing in..."), reset in a `finally`
 - [ ] `signup` (calls `login` after creating the account)
 - [ ] API helper that attaches `Authorization: Bearer` to every request
-- [ ] Protected routes
-- [ ] Cleanup: flatten nested `try`, rename storage key to lowercase constant, remove debug `console.log`s
+- [ ] Protected routes (wait for `loading` before redirecting)
+- [ ] Login page polish: real MoonWatch copy instead of template text, labels on inputs
+- [ ] Cleanup: storage key as a lowercase constant, remove debug `console.log`s, rename `get_current_user` → `meRes`, rename `username` state → `email`, remove unused `React` import
 
 ---
 
@@ -284,6 +393,18 @@ app.add_middleware(
 ### ❌ Login "succeeds" in the form even with a wrong password
 * **Cause:** a `catch` that logs but doesn't re-throw swallows the error.
 * **Fix:** `throw error` at the end of the `catch`.
+
+### ❌ 422 again, from the real form
+* **Cause:** `onChange={(e) => setUserName(e.value)}` (should be `e.target.value`) and a password input with no `value`/`onChange`. Both fields reached the backend empty.
+* **Debug:** Network tab → the request → **Payload** tab shows exactly what was sent. Or `console.log` the state at the top of `handleSubmit`.
+
+### ❌ Error message flashes, then the page navigates away
+* **Cause:** `navigate("/")` was after the `try/catch`, so it ran on failure too.
+* **Fix:** move it inside the `try`, right after `await login(...)`.
+
+### ❌ Logged out on every refresh
+* **Cause:** nothing read the token back from `localStorage` on mount.
+* **Fix:** Step 13's `useEffect`.
 
 ### ℹ️ Console noise to ignore
 * `chrome-extension://...`, `gpc.js`, `runtime.lastError`: browser extensions, not the app.
